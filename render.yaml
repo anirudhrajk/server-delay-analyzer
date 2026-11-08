@@ -4,11 +4,18 @@ services:
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    # one worker: scans and their results live in this process's memory
-    startCommand: gunicorn app:app --workers 1 --threads 8 --timeout 180 --bind 0.0.0.0:$PORT
+    # one worker: running scans live in this process's memory (accounts and history are in the database)
+    startCommand: gunicorn app:app --workers 1 --threads 16 --timeout 180 --bind 0.0.0.0:$PORT
     healthCheckPath: /api/health
     envVars:
       - key: SDA_HOSTED
         value: "1"
       - key: PYTHON_VERSION
         value: "3.12.7"
+      # signs the sign-in cookie; Render makes a random one
+      - key: SECRET_KEY
+        generateValue: true
+      # PostgreSQL connection string (Neon, Render Postgres...). Without it, accounts and
+      # history are kept in a file that Render wipes on every deploy and restart.
+      - key: DATABASE_URL
+        sync: false

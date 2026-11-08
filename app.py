@@ -12,24 +12,32 @@ What it can scan:
             batch size with our formula (scanners/program.py)
   Your data an uploaded CSV of measurements (analyzer.py)
 
-Safety: the server only listens on 127.0.0.1 (this computer). Because it can run
+Accounts: everyone signs in with their own user ID and password (store.py), and
+each report is saved to that person's own history. Scans belong to the person who
+started them, and a fair line (jobs.py) shares the server when many people scan at once.
+
+Safety: locally the server only listens on 127.0.0.1 (this computer). Because it can run
 commands and read folders, every request must also carry a secret token that is
 put into the page when you open it, so no other website you visit can use it.
 """
+import collections
 import hmac
 import os
 import secrets
+import threading
+import time
+from datetime import timedelta
 
-from flask import Flask, Response, abort, jsonify, request, send_from_directory
+from flask import Flask, Response, abort, jsonify, redirect, request, send_from_directory, session
 
 from analyzer import DataError, analyse, make_sample, parse_csv
 from jobs import Busy, JobRunner
+from store import AccountError, Store
 from scanners import folder, program, website
 from scanners.common import ScanError
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 WEB = os.path.join(HERE, "web")
-TOKEN = secrets.token_urlsafe(24)
 # Hosted mode (SDA_HOSTED=1, set on Render): the site is public, so everything that
 # touches the server's own files, programs or commands is switched off, and the
 # tuner only runs the built-in demo server.
@@ -37,11 +45,57 @@ HOSTED = os.environ.get("SDA_HOSTED") == "1"
 LOCAL_ONLY = {"/api/scan/folder", "/api/processes", "/api/scan/process", "/api/scan/command"}
 DEMO_TEMPLATE = "python samples/demo_server.py --threads {n} --batch {b}"
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "[::1]"}
-OPEN_PATHS = {"/api/health", "/api/sample"}
+OPEN_PATHS = {"/api/health", "/api/sample", "/api/auth/login", "/api/auth/signup"}
+
+
+def _secret_key():
+    """SECRET_KEY online; on your own computer a random key kept in .secret_key so sign-ins survive restarts."""
+    key = os.environ.get("SECRET_KEY", "").strip()
+    if key:
+        return key
+    path = os.path.join(HERE, ".secret_key")
+    try:
+        with open(path, encoding="utf-8") as f:
+            key = f.read().strip()
+    except OSError:
+        key = ""
+    if not key:
+        key = secrets.token_urlsafe(48)
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(key)
+        except OSError:
+            pass
+    return key
+
 
 app = Flask(__name__, static_folder=WEB, static_url_path="")
-app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024  # 10 MB upload limit
-jobs = JobRunner()
+app.config.update(
+    MAX_CONTENT_LENGTH=10 * 1024 * 1024,  # 10 MB upload limit
+    SECRET_KEY=_secret_key(),
+    SESSION_COOKIE_NAME="sda_session",
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=HOSTED,
+    PERMANENT_SESSION_LIFETIME=timedelta(days=30),
+)
+store = Store()
+
+
+def _report_target(result, kind):
+    if kind == "data":
+        return "Uploaded measurements"
+    if kind == "tune":
+        return ((result.get("tune") or {}).get("template")) or "Tuning"
+    return str(result.get("target") or kind)
+
+
+def _save_report(job, result):
+    kind = result.get("kind", job.kind)
+    return store.save_report(job.owner, kind, _report_target(result, kind), result)
+
+
+jobs = JobRunner(on_done=_save_report)
 
 
 # ---------------------------------------------------------------- safety checks
@@ -64,9 +118,14 @@ def only_this_computer():
     origin = request.headers.get("Origin")
     if not HOSTED and origin and _hostname(origin.split("://", 1)[-1]) not in LOCAL_HOSTS:
         abort(403)                      # blocks other websites
+    uid = session.get("uid")
+    if request.path == "/" and not uid:
+        return redirect("/login")
     if request.path.startswith("/api/") and request.path not in OPEN_PATHS:
-        if not hmac.compare_digest(request.headers.get("X-Token", ""), TOKEN):
-            return jsonify(error="This page is out of date. Reload it (the server was restarted)."), 401
+        if not uid:
+            return jsonify(error="Please sign in again.", login=True), 401
+        if not hmac.compare_digest(request.headers.get("X-Token", ""), session.get("csrf", "")):
+            return jsonify(error="This page is out of date. Reload it."), 401
 
 
 @app.after_request
@@ -80,9 +139,137 @@ def no_cache(resp):
 # ---------------------------------------------------------------- pages
 @app.route("/")
 def index():
+    if not store.user_by_id(session["uid"]):        # account no longer exists
+        session.clear()
+        return redirect("/login")
     with open(os.path.join(WEB, "index.html"), encoding="utf-8") as f:
-        html = f.read().replace("{{APP_TOKEN}}", TOKEN).replace("{{APP_HOSTED}}", "1" if HOSTED else "")
+        html = (f.read().replace("{{APP_TOKEN}}", session["csrf"]).replace("{{APP_HOSTED}}", "1" if HOSTED else "")
+                .replace("{{APP_USER}}", _html_attr(session.get("username", ""))))
     return Response(html, mimetype="text/html")
+
+
+def _html_attr(s):
+    return str(s).replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+@app.route("/login")
+def login_page():
+    if session.get("uid") and store.user_by_id(session["uid"]):
+        return redirect("/")
+    resp = send_from_directory(WEB, "login.html")
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+# ---------------------------------------------------------------- accounts
+_fails = collections.defaultdict(collections.deque)     # who -> times of recent failed sign-ins
+_fails_lock = threading.Lock()
+FAIL_LIMIT, FAIL_WINDOW = 8, 10 * 60
+
+
+def _client_ip():
+    fwd = request.headers.get("X-Forwarded-For", "") if HOSTED else ""
+    return (fwd.split(",")[0].strip() if fwd else request.remote_addr) or "?"
+
+
+def _too_many(keys):
+    now = time.time()
+    with _fails_lock:
+        for k in keys:
+            q = _fails[k]
+            while q and now - q[0] > FAIL_WINDOW:
+                q.popleft()
+            if len(q) >= FAIL_LIMIT:
+                return True
+    return False
+
+
+def _failed(keys):
+    with _fails_lock:
+        for k in keys:
+            _fails[k].append(time.time())
+
+
+def _sign_in(user):
+    session.clear()
+    session.permanent = True
+    session["uid"], session["username"] = user["id"], user["username"]
+    session["csrf"] = secrets.token_urlsafe(24)
+
+
+def _auth_body():
+    if not request.is_json:      # another site's plain form cannot send a JSON body
+        abort(400)
+    b = request.get_json(silent=True) or {}
+    return str(b.get("username", "")).strip(), str(b.get("password", ""))
+
+
+@app.route("/api/auth/signup", methods=["POST"])
+def signup():
+    username, password = _auth_body()
+    ip = "ip:" + _client_ip()
+    if _too_many([ip]):
+        return jsonify(error="Too many tries. Wait a few minutes and try again."), 429
+    try:
+        user = store.create_user(username, password)
+    except AccountError as e:
+        if "taken" in str(e):
+            _failed([ip])
+        return jsonify(error=str(e)), 400
+    _sign_in(user)
+    return jsonify(ok=True, username=user["username"])
+
+
+@app.route("/api/auth/login", methods=["POST"])
+def login():
+    username, password = _auth_body()
+    keys = ["ip:" + _client_ip(), "user:" + username.lower()]
+    if _too_many(keys):
+        return jsonify(error="Too many wrong passwords. Wait a few minutes and try again."), 429
+    user = store.check_login(username, password)
+    if not user:
+        _failed(keys)
+        return jsonify(error="That user ID and password do not match."), 401
+    _sign_in(user)
+    return jsonify(ok=True, username=user["username"])
+
+
+@app.route("/api/auth/logout", methods=["POST"])
+def logout():
+    session.clear()
+    return jsonify(ok=True)
+
+
+@app.route("/api/me")
+def me():
+    return jsonify(username=session.get("username"), database=store.kind)
+
+
+# ---------------------------------------------------------------- history (each person sees only their own)
+@app.route("/api/history")
+def history():
+    return jsonify(reports=store.list_reports(session["uid"]))
+
+
+@app.route("/api/history/<report_id>")
+def history_item(report_id):
+    rep = store.get_report(session["uid"], report_id)
+    if rep is None:
+        return jsonify(error="That report is not in your history."), 404
+    return jsonify(rep)
+
+
+@app.route("/api/history/<report_id>", methods=["DELETE"])
+def history_delete(report_id):
+    if not store.delete_report(session["uid"], report_id):
+        return jsonify(error="That report is not in your history."), 404
+    return jsonify(ok=True)
+
+
+@app.route("/api/history", methods=["DELETE"])
+def history_clear():
+    store.clear_reports(session["uid"])
+    return jsonify(ok=True)
 
 
 @app.route("/api/health")
@@ -128,6 +315,10 @@ def api_analyze():
         result = analyse(n, b, d, _current(request.form.get("threads"), request.form.get("batch")))
         result["skipped_rows"] = skipped
         result["kind"] = "data"
+        try:
+            result["report_id"] = store.save_report(session["uid"], "data", _report_target(result, "data"), result)
+        except Exception:
+            app.logger.exception("could not save the report")
         return jsonify(result)
     except DataError as e:
         return jsonify(error=str(e)), 400
@@ -136,7 +327,7 @@ def api_analyze():
 # ---------------------------------------------------------------- scans (run in the background)
 def _start(kind, fn, *args, **kwargs):
     try:
-        job = jobs.start(kind, fn, *args, **kwargs)
+        job = jobs.start(kind, session["uid"], fn, *args, **kwargs)
     except Busy as e:
         return jsonify(error=str(e)), 429
     return jsonify(job=job.id)
@@ -225,15 +416,15 @@ def scan_tune():
 
 @app.route("/api/jobs/<job_id>")
 def job_status(job_id):
-    job = jobs.get(job_id)
+    job, ahead = jobs.get(job_id, session["uid"])
     if job is None:
         return jsonify(error="This scan is no longer available. Start it again."), 404
-    return jsonify(job.snapshot())
+    return jsonify(job.snapshot(ahead))
 
 
 @app.route("/api/jobs/<job_id>/cancel", methods=["POST"])
 def job_cancel(job_id):
-    job = jobs.get(job_id)
+    job, _ = jobs.get(job_id, session["uid"])
     if job is None:
         return jsonify(error="Unknown scan."), 404
     job.cancel()

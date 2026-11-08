@@ -127,3 +127,18 @@ site, scans that would touch the server's own computer are switched off:
 * Folder: you can still list a folder's files in your browser; timing a folder needs the local app.
 * Program: only the tuner with the built-in demo server; watching programs and running
   commands need the local app (`python app.py`).
+
+## Accounts and history
+
+Everyone signs in with their own user ID and password (a sign-in page opens first).
+Each report is saved to that person's own history (the History button, top right),
+and nobody can see or cancel anyone else's scans. Passwords are stored only as
+salted scrypt hashes.
+
+When many people scan at once, at most `SDA_SLOTS` scans (default 3) run at the same
+moment; the rest wait in a first-come, first-served line and the page shows their
+place. One person can have 2 scans going at a time.
+
+Storage: set `DATABASE_URL` to a PostgreSQL database online (Neon, Render Postgres).
+Without it the app uses a local SQLite file (`sda.db`), which is fine on your own
+computer but is wiped on every Render deploy and restart.

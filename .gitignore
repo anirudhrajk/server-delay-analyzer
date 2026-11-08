@@ -5,3 +5,5 @@ venv/
 .brud/
 .claude/
 .vscode/
+.secret_key
+sda.db

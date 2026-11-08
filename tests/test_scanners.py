@@ -153,20 +153,34 @@ class TestOverload(unittest.TestCase):
 class TestServerSafety(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        import tempfile
         import app as app_module
+        from store import Store
+        cls.tmp = tempfile.TemporaryDirectory()
         cls.app_module = app_module
+        cls._old_store = app_module.store
+        app_module.store = Store(url="", sqlite_path=os.path.join(cls.tmp.name, "s.db"))
         cls.client = app_module.app.test_client()
+        cls.client.post("/api/auth/signup", json={"username": "tester", "password": "test-password"})
+        html = cls.client.get("/").get_data(as_text=True)
+        cls.TOKEN = html.split('name="app-token" content="')[1].split('"')[0]
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.app_module.store = cls._old_store
+        cls.tmp.cleanup()
 
     def test_page_carries_token(self):
         r = self.client.get("/")
-        self.assertIn(self.app_module.TOKEN, r.get_data(as_text=True))
+        self.assertIn(self.TOKEN, r.get_data(as_text=True))
+        self.assertGreater(len(self.TOKEN), 20)
 
     def test_api_needs_token(self):
         r = self.client.post("/api/scan/folder", json={"path": ROOT})
         self.assertEqual(r.status_code, 401)
 
     def test_other_websites_are_blocked(self):
-        h = {"X-Token": self.app_module.TOKEN, "Origin": "https://evil.example"}
+        h = {"X-Token": self.TOKEN, "Origin": "https://evil.example"}
         self.assertEqual(self.client.post("/api/scan/folder", json={"path": ROOT}, headers=h).status_code, 403)
 
     def test_dns_rebinding_is_blocked(self):
@@ -175,7 +189,7 @@ class TestServerSafety(unittest.TestCase):
 
     def test_health_and_job_flow(self):
         self.assertEqual(self.client.get("/api/health").status_code, 200)
-        h = {"X-Token": self.app_module.TOKEN}
+        h = {"X-Token": self.TOKEN}
         r = self.client.post("/api/scan/folder", json={"path": os.path.join(ROOT, "samples"), "read_mb": 16}, headers=h)
         self.assertEqual(r.status_code, 200)
         job_id = r.get_json()["job"]
@@ -187,6 +201,9 @@ class TestServerSafety(unittest.TestCase):
             time.sleep(0.1)
         self.assertEqual(s["status"], "done", s.get("error"))
         self.assertEqual(s["result"]["kind"], "folder")
+        self.assertTrue(s["report_id"])                                   # saved to this person's history
+        hist = self.client.get("/api/history", headers=h).get_json()["reports"]
+        self.assertIn(s["report_id"], [x["id"] for x in hist])
 
 
 if __name__ == "__main__":

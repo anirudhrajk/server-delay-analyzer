@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Sign in · Server Delay Analyzer</title>
+<link rel="icon" type="image/png" href="img/logo.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="css/login.css">
+</head>
+<body>
+
+<div class="lg-threads" aria-hidden="true"><div id="bgThreads"></div></div>
+
+<a class="lg-brand" href="/login"><span class="lg-mark" id="logoMetal"></span><span>Server Delay Analyzer</span></a>
+
+<main class="lg-wrap">
+  <section class="lg-card" aria-labelledby="lgTitle">
+    <h1 id="lgTitle">Welcome back</h1>
+    <p class="lg-sub" id="lgSub">Sign in to scan and see your saved reports.</p>
+
+    <div class="lg-seg" role="tablist" aria-label="Sign in or create an account">
+      <button type="button" role="tab" class="on" data-tab="login" aria-selected="true">Sign in</button>
+      <button type="button" role="tab" data-tab="signup" aria-selected="false">Create account</button>
+    </div>
+
+    <form id="lgForm" novalidate>
+      <label class="lg-field">
+        <span>User ID</span>
+        <input id="lgUser" name="username" type="text" autocomplete="username" autocapitalize="off" spellcheck="false"
+               required minlength="3" maxlength="32" placeholder="e.g. anirudh">
+      </label>
+      <label class="lg-field">
+        <span>Password</span>
+        <span class="lg-pw">
+          <input id="lgPass" name="password" type="password" autocomplete="current-password" required minlength="8" maxlength="200">
+          <button type="button" class="lg-eye" id="lgEye" aria-label="Show password" aria-pressed="false">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>
+          </button>
+        </span>
+      </label>
+      <label class="lg-field" id="lgConfirmRow" hidden>
+        <span>Confirm password</span>
+        <input id="lgPass2" type="password" autocomplete="new-password" maxlength="200">
+      </label>
+      <p class="lg-hint" id="lgHint" hidden>User ID: 3 to 32 letters, numbers, dots, dashes or underscores. Password: at least 8 characters.</p>
+      <p class="lg-error" id="lgError" role="alert" hidden></p>
+      <button type="submit" class="lg-submit" id="lgSubmit">Sign in</button>
+    </form>
+  </section>
+  <p class="lg-foot">Each account has its own private history. Nobody else can see your scans.</p>
+</main>
+
+<script src="js/webthreads.js"></script>
+<script src="js/metallicpaint.js"></script>
+<script>
+(function () {
+  'use strict';
+  const $ = (id) => document.getElementById(id);
+  let tab = 'login', busy = false;
+
+  try { if (window.WebThreads) window.WebThreads($('bgThreads'), { colors: ['#5227FF', '#FF9FFC'], coreColor: '#FFFFFF', threadCount: 6, spread: 0.18 }); }
+  catch (e) { /* no WebGL2: plain black */ }
+  try {
+    if (window.MetallicPaint && window.WebGL2RenderingContext) window.MetallicPaint($('logoMetal'), { imageSrc: 'img/logo.png', dpr: 4, scale: 0.92 });
+    else throw 0;
+  } catch (e) { $('logoMetal').innerHTML = '<img src="img/logo.png" alt="">'; }
+
+  function setTab(t) {
+    tab = t;
+    document.querySelectorAll('.lg-seg button').forEach((b) => {
+      const on = b.dataset.tab === t; b.classList.toggle('on', on); b.setAttribute('aria-selected', on);
+    });
+    const up = t === 'signup';
+    $('lgTitle').textContent = up ? 'Create your account' : 'Welcome back';
+    $('lgSub').textContent = up ? 'Pick a user ID and a password. Your reports will be saved to it.' : 'Sign in to scan and see your saved reports.';
+    $('lgSubmit').textContent = up ? 'Create account' : 'Sign in';
+    $('lgConfirmRow').hidden = !up; $('lgHint').hidden = !up;
+    $('lgPass').autocomplete = up ? 'new-password' : 'current-password';
+    showError('');
+  }
+  function showError(m) { $('lgError').textContent = m || ''; $('lgError').hidden = !m; }
+  document.querySelectorAll('.lg-seg button').forEach((b) => b.addEventListener('click', () => setTab(b.dataset.tab)));
+  if (location.hash === '#signup') setTab('signup');
+
+  $('lgEye').addEventListener('click', () => {
+    const show = $('lgPass').type === 'password';
+    $('lgPass').type = $('lgPass2').type = show ? 'text' : 'password';
+    $('lgEye').setAttribute('aria-pressed', show); $('lgEye').setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+  });
+
+  $('lgForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (busy) return;
+    const username = $('lgUser').value.trim(), password = $('lgPass').value;
+    if (!username) return showError('Type your user ID.'), $('lgUser').focus();
+    if (!password) return showError('Type your password.'), $('lgPass').focus();
+    if (tab === 'signup') {
+      if (!/^[A-Za-z0-9_.-]{3,32}$/.test(username)) return showError('User ID: 3 to 32 letters, numbers, dots, dashes or underscores.');
+      if (password.length < 8) return showError('Password: at least 8 characters.');
+      if (password !== $('lgPass2').value) return showError('The two passwords are different.');
+    }
+    busy = true; $('lgSubmit').disabled = true; showError('');
+    const label = $('lgSubmit').textContent;
+    $('lgSubmit').textContent = tab === 'signup' ? 'Creating account…' : 'Signing in…';
+    try {
+      const r = await fetch('/api/auth/' + tab, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                                  body: JSON.stringify({ username, password }) });
+      let j = {};
+      try { j = await r.json(); } catch (x) { /* not JSON */ }
+      if (!r.ok) throw new Error(j.error || 'Something went wrong (HTTP ' + r.status + ').');
+      location.replace('/');
+    } catch (err) {
+      showError(err.message === 'Failed to fetch' ? 'Cannot reach the analyzer. Check your connection and try again.' : err.message);
+      busy = false; $('lgSubmit').disabled = false; $('lgSubmit').textContent = label;
+    }
+  });
+  $('lgUser').focus();
+})();
+</script>
+</body>
+</html>

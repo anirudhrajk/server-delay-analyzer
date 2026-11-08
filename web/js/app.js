@@ -8,6 +8,7 @@
   const $ = (id) => document.getElementById(id);
   const TOKEN = (document.querySelector('meta[name="app-token"]') || {}).content || '';
   const HOSTED = ((document.querySelector('meta[name="app-hosted"]') || {}).content || '') === '1';
+  const USER = ((document.querySelector('meta[name="app-user"]') || {}).content || '');
   if (HOSTED) document.documentElement.classList.add('hosted');
   const ON_SERVER = /^https?:$/.test(location.protocol) && TOKEN && TOKEN.indexOf('{{') !== 0;
 
@@ -39,6 +40,7 @@
     catch (e) { throw new Error('Cannot reach the analyzer. Is "python app.py" still running?'); }
     let j;
     try { j = await r.json(); } catch (e) { throw new Error('The analyzer sent an unexpected reply (HTTP ' + r.status + ').'); }
+    if (r.status === 401 && j.login) { location.replace('/login'); throw new Error('Please sign in again.'); }
     if (!r.ok) throw new Error(j.error || ('Error ' + r.status));
     return j;
   }
@@ -394,6 +396,16 @@
     fit();
   }
 
+  function when(d) {
+    const t = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    const day = new Date(); day.setHours(0, 0, 0, 0);
+    const diff = Math.round((day - new Date(d.getFullYear(), d.getMonth(), d.getDate())) / 864e5);
+    if (diff === 0) return 'Today, ' + t;
+    if (diff === 1) return 'Yesterday, ' + t;
+    return d.toLocaleDateString([], { day: 'numeric', month: 'short', year: d.getFullYear() === day.getFullYear() ? undefined : 'numeric' }) + ', ' + t;
+  }
+  window.__sdaWhen = when;
+
   function showResult(r) {
     clearDash();
     if (!r) return;
@@ -409,7 +421,7 @@
       tg.innerHTML = '<a href="' + esc(txt) + '" target="_blank" rel="noopener noreferrer">' +
         esc(txt.replace(/^https?:\/\//i, '').replace(/\/$/, '')) + ' <span aria-hidden="true">&#8599;</span></a>';
     }
-    $('dashWhen').textContent = 'Today, ' + new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    $('dashWhen').textContent = when(r._savedAt ? new Date(r._savedAt * 1000) : new Date());
   }
 
   // monochrome: shades of white, brightest = the part that matters most
@@ -954,6 +966,101 @@
     { key: 'asher', name: 'Asher Jerom Biju', role: 'Data Analysis & Testing Lead', focus: 'Data · Testing · Evaluation', email: 'jeromeasher262@gmail.com' },
     { key: 'bhuvaneshwari', name: 'Bhuvaneshwari D', role: 'Research & Validation Lead', focus: 'Research · Surveys · Reports', email: 'bhuvii.dharma@gmail.com' }
   ];
+  // ------------------------------------------------------------------ account bar + history
+  (function account() {
+    const bar = $('userbar');
+    if (!bar) return;
+    $('ubName').textContent = USER || 'Signed in';
+    $('ubAv').textContent = (USER || '?').charAt(0).toUpperCase();
+    // sit just left of the About button, whatever its width
+    function place() {
+      const t = document.querySelector('#aboutRoot .sm-toggle');
+      if (!t) return;
+      const r = t.getBoundingClientRect();
+      if (r.width) { bar.style.right = Math.max(12, window.innerWidth - r.left + 10) + 'px'; bar.style.top = (r.top + (r.height - bar.offsetHeight) / 2) + 'px'; }
+    }
+    window.addEventListener('resize', place);
+    setTimeout(place, 0); setTimeout(place, 600);
+    if (window.ResizeObserver) setTimeout(() => { const t = document.querySelector('#aboutRoot .sm-toggle'); if (t) new ResizeObserver(place).observe(t); }, 0);
+
+    $('signOut').addEventListener('click', async () => {
+      try { await api('/api/auth/logout', { method: 'POST' }); } catch (e) { /* signed out anyway */ }
+      location.replace('/login');
+    });
+
+    const LABEL = { website: 'Website', folder: 'Folder', process: 'Program', command: 'Command', data: 'Your data', tune: 'Tuning' };
+    const ICON = {
+      website: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3Z"/>',
+      folder: '<path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4.3l2 2h8.7A1.5 1.5 0 0 1 21 9.5v8A1.5 1.5 0 0 1 19.5 19h-15A1.5 1.5 0 0 1 3 17.5Z"/>',
+      process: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M12 15h5"/>',
+      command: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M12 15h5"/>',
+      tune: '<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>',
+      data: '<path d="M4 19V5M4 19h16M8 15l3-4 3 2 5-6"/>'
+    };
+    function title(it) {
+      let t = String(it.target || LABEL[it.kind] || 'Report');
+      if (it.kind === 'website') { try { t = new URL(t).hostname.replace(/^www\./, ''); } catch (e) { /* keep */ } }
+      return t;
+    }
+    const layer = $('histLayer'), list = $('histList');
+    let lastFocus = null;
+    async function load() {
+      list.innerHTML = '<p class="hist-empty">Loading…</p>';
+      try {
+        const { reports } = await api('/api/history');
+        $('histClear').hidden = !reports.length;
+        $('histSub').textContent = reports.length ? reports.length + ' saved report' + (reports.length === 1 ? '' : 's') + ', newest first.' : 'Every report you make is saved here.';
+        if (!reports.length) { list.innerHTML = '<p class="hist-empty">No reports yet. Run a scan and it will appear here.</p>'; return; }
+        list.innerHTML = reports.map((it) =>
+          '<div class="hist-item" data-id="' + esc(it.id) + '">' +
+          '<button type="button" class="hist-open" data-id="' + esc(it.id) + '">' +
+          '<span class="hist-ic"><svg viewBox="0 0 24 24" aria-hidden="true">' + (ICON[it.kind] || ICON.data) + '</svg></span>' +
+          '<span class="hist-txt"><b>' + esc(title(it)) + '</b><small>' + esc(LABEL[it.kind] || 'Report') + ' · ' + esc(when(new Date(it.created * 1000))) + '</small></span></button>' +
+          '<button type="button" class="hist-del" data-id="' + esc(it.id) + '" aria-label="Delete this report" title="Delete">' +
+          '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M10 7V5h4v2M7 7l1 12h8l1-12"/></svg></button></div>').join('');
+      } catch (e) { list.innerHTML = '<p class="hist-empty">' + esc(e.message) + '</p>'; }
+    }
+    function open() {
+      lastFocus = document.activeElement;
+      layer.hidden = false;
+      requestAnimationFrame(() => layer.classList.add('in'));
+      $('histBtn').setAttribute('aria-expanded', 'true');
+      load();
+      $('histClose').focus({ preventScroll: true });
+    }
+    function close() {
+      layer.classList.remove('in');
+      $('histBtn').setAttribute('aria-expanded', 'false');
+      setTimeout(() => { if (!layer.classList.contains('in')) layer.hidden = true; }, 320);
+      if (lastFocus && lastFocus.focus) lastFocus.focus({ preventScroll: true });
+    }
+    $('histBtn').addEventListener('click', open);
+    $('histClose').addEventListener('click', close);
+    layer.addEventListener('click', (e) => { if (e.target === layer) close(); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !layer.hidden) { e.stopPropagation(); close(); } }, true);
+    list.addEventListener('click', async (e) => {
+      const del = e.target.closest('.hist-del'), opn = e.target.closest('.hist-open');
+      if (del) {
+        const row = del.closest('.hist-item');
+        row.classList.add('going');
+        try { await api('/api/history/' + del.dataset.id, { method: 'DELETE' }); load(); }
+        catch (err) { row.classList.remove('going'); showError(err.message); }
+      } else if (opn) {
+        opn.disabled = true;
+        try {
+          const rep = await api('/api/history/' + opn.dataset.id);
+          const r = rep.result; r._savedAt = rep.created;
+          close();
+          setTimeout(() => openResults(r), 200);
+        } catch (err) { opn.disabled = false; list.insertAdjacentHTML('afterbegin', '<p class="hist-empty">' + esc(err.message) + '</p>'); }
+      }
+    });
+    $('histClear').addEventListener('click', async () => {
+      if (!confirm('Delete every report in your history? This cannot be undone.')) return;
+      try { await api('/api/history', { method: 'DELETE' }); load(); } catch (e) { showError(e.message); }
+    });
+  })();
+
   (function about() {
     if (!window.StaggeredMenu || !window.gsap) return;
     const rootEl = $('aboutRoot');

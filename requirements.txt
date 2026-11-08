@@ -5,3 +5,4 @@ sympy>=1.12
 psutil>=5.9
 certifi>=2023.7.22
 gunicorn>=22.0
+psycopg[binary]>=3.1

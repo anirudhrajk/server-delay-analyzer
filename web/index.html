@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="app-token" content="{{APP_TOKEN}}">
 <meta name="app-hosted" content="{{APP_HOSTED}}">
+<meta name="app-user" content="{{APP_USER}}">
 <meta name="color-scheme" content="dark">
 <title>Server Delay Analyzer</title>
 <link rel="icon" type="image/png" href="img/logo.png">
@@ -23,6 +24,32 @@
 <nav class="topbar">
   <a class="brand-logo" href="/"><span class="brand-mark" id="logoMetal"></span><span class="brand-name">Server Delay Analyzer</span></a>
 </nav>
+
+<!-- signed-in person: their history, and sign out (sits left of the About button) -->
+<div class="userbar" id="userbar" data-plain>
+  <button type="button" class="ub-btn" id="histBtn" aria-haspopup="dialog" aria-controls="hist">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1"/><path d="M3.5 4.5v4h4"/><path d="M12 7.5V12l3 2"/></svg>History
+  </button>
+  <span class="ub-user"><span class="ub-av" id="ubAv" aria-hidden="true"></span><span class="ub-name" id="ubName"></span>
+    <button type="button" class="ub-out" id="signOut" aria-label="Sign out" title="Sign out">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4"/><path d="M10 16l-4-4 4-4M6 12h10"/></svg>
+    </button>
+  </span>
+</div>
+
+<!-- history: this person's saved reports -->
+<div class="hist-layer" id="histLayer" hidden data-plain>
+  <aside class="hist" id="hist" role="dialog" aria-modal="true" aria-labelledby="histTitle">
+    <header class="hist-head">
+      <div><h2 id="histTitle">Your history</h2><p class="hist-sub" id="histSub">Every report you make is saved here.</p></div>
+      <button type="button" class="hist-x" id="histClose" aria-label="Close history">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+      </button>
+    </header>
+    <div class="hist-list" id="histList"></div>
+    <footer class="hist-foot"><button type="button" class="hist-clear" id="histClear" hidden>Clear history</button></footer>
+  </aside>
+</div>
 
 <div class="wrap">
 
