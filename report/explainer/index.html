@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Server Delay Minimizer – Log-Scale Bowl Search</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div>
+    <span class="tag">Linear Algebra &amp; Calculus · Micro Project</span>
+    <h1>Finding the <em>Minimum Delay</em> of a Server</h1>
+    <p class="sub">A server is a kitchen. Requests are orders. Delay is how long a customer waits.
+      We find the exact settings that make the wait as short as possible, using <b>partial derivatives</b>,
+      the <b>Hessian matrix</b>, <b>eigenvalues</b>, and <b>least squares</b>. Then we check the answer three independent ways.</p>
+  </div>
+  <div class="formula" title="The server delay function">
+    D(n,b) = <span class="t-q">A/n</span> + <span class="t-c">B·n</span> + <span class="t-s">C/b</span> + <span class="t-w">E·b</span> + <span class="t-k">k·n·b</span>
+  </div>
+</header>
+
+<div class="kitchen">
+  <div class="kc"><span class="big">🍳</span><b>Server = Kitchen</b><span>The computer that handles requests, like a kitchen handles orders.</span></div>
+  <div class="kc"><span class="big">🧾</span><b>Request = Order</b><span>Every click or API call is an order waiting to be cooked.</span></div>
+  <div class="kc"><span class="big">👩‍🍳</span><b>n = Cooks (worker threads)</b><span>Too few → orders pile up. Too many → cooks bump into each other.</span></div>
+  <div class="kc"><span class="big">🍕</span><b>b = Batch size</b><span>Cook 1 pizza at a time → oven heated again and again. Wait for 30 → first customer starves.</span></div>
+</div>
+
+<div class="grid">
+  <!-- ============ CONTROLS ============ -->
+  <aside class="card" id="controls">
+    <div class="sect">Kitchen settings (the server's behaviour)</div>
+    <div id="sliders"></div>
+    <div class="sect">Presets</div>
+    <div class="btns">
+      <button data-preset="default">Default kitchen</button>
+      <button data-preset="rush">Rush hour</button>
+      <button data-preset="tiny">Tiny kitchen</button>
+      <button data-preset="clash">Heavy clash</button>
+      <button data-preset="random">🎲 Random server</button>
+    </div>
+    <div class="sect">Your current setting (before optimising)</div>
+    <div id="sliders2"></div>
+  </aside>
+
+  <!-- ============ RESULTS + MAP ============ -->
+  <main>
+    <div class="stats">
+      <div class="stat good"><div class="k">Best number of cooks n*</div><div class="v" id="sN">–</div><div class="s">worker threads</div></div>
+      <div class="stat good"><div class="k">Best batch size b*</div><div class="v" id="sB">–</div><div class="s">requests per batch</div></div>
+      <div class="stat good"><div class="k">Minimum delay D*</div><div class="v" id="sD">–</div><div class="s">milliseconds</div></div>
+      <div class="stat warm"><div class="k">Faster than your setting</div><div class="v" id="sImp">–</div><div class="s" id="sImpS">–</div></div>
+      <div class="stat"><div class="k">Real-world setting (whole numbers)</div><div class="v" id="sInt">–</div><div class="s" id="sIntS">–</div></div>
+    </div>
+
+    <div class="card">
+      <div class="maphead">
+        <h2 style="margin:0">Delay map: every possible setting, coloured by waiting time</h2>
+        <div class="btns">
+          <button id="tgSamples" class="on">Our measurements</button>
+          <button id="tgNewton" class="on">Newton path</button>
+          <button id="tgContours" class="on">Contour lines</button>
+        </div>
+      </div>
+      <div class="mapbox">
+        <canvas id="map" width="900" height="560"></canvas>
+        <div class="tip" id="tip"></div>
+      </div>
+      <div class="legend">
+        <span><span class="dot" style="background:var(--mint)"></span>Exact minimum (calculus)</span>
+        <span><span class="dot" style="background:var(--blue)"></span>Our method's noisy measurements</span>
+        <span><span class="dot" style="background:#fff;border:2px solid var(--blue)"></span>Our method's answer</span>
+        <span><span class="dot" style="background:var(--pink)"></span>Newton steps</span>
+        <span><span class="dot" style="background:var(--amber)"></span>Your current setting</span>
+        <span>Axes use a doubling scale: 0.5, 1, 2, 4 … 64. Bright = short wait, dark = long wait.</span>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- ============ TABS ============ -->
+<div class="tabs">
+  <button class="tab active" data-tab="t1">① Where the delay comes from</button>
+  <button class="tab" data-tab="t2">② Exact answer (calculus)</button>
+  <button class="tab" data-tab="t3">③ Our method: Log-Scale Bowl Search</button>
+  <button class="tab" data-tab="t4">④ Proof it's correct</button>
+  <button class="tab" data-tab="t5">⑤ Slices of the bowl</button>
+</div>
+
+<section class="pane active" id="t1">
+  <div class="two">
+    <div>
+      <h2>Five parts of the waiting time</h2>
+      <p class="small">Each part of the formula is one everyday kitchen effect. Two of them get <b>smaller</b> when you turn a knob up, and two get <b>bigger</b>. That tug-of-war is why a "sweet spot" exists.</p>
+      <table>
+        <tr><th class="l">Term</th><th class="l">Kitchen meaning</th><th class="l">Turn knob up →</th></tr>
+        <tr><td class="t-q">A / n</td><td class="l">Orders pile up when there are too few cooks</td><td class="l">falls ↓</td></tr>
+        <tr><td class="t-c">B · n</td><td class="l">Each extra cook adds crowding and coordination</td><td class="l">rises ↑</td></tr>
+        <tr><td class="t-s">C / b</td><td class="l">Oven warm-up is shared by the batch (more pizzas, less cost each)</td><td class="l">falls ↓</td></tr>
+        <tr><td class="t-w">E · b</td><td class="l">The first order waits for the batch to fill</td><td class="l">rises ↑</td></tr>
+        <tr><td class="t-k">k · n · b</td><td class="l">Many cooks <i>and</i> big batches fight for the same counter space (memory)</td><td class="l">rises ↑</td></tr>
+      </table>
+      <p class="small" style="margin-top:10px">Units: A and C in ms·unit, B and E in ms per unit, k in ms per (cook × order). D is in milliseconds.</p>
+    </div>
+    <div>
+      <h2>Your setting vs the best setting</h2>
+      <div id="bars"></div>
+      <p class="small" id="barsNote"></p>
+    </div>
+  </div>
+</section>
+
+<section class="pane" id="t2">
+  <div class="two">
+    <div>
+      <div class="step"><div class="n">STEP 1 · PARTIAL DERIVATIVES</div>
+        <p>How does the delay change if we nudge one knob and hold the other still?</p>
+        <div class="m">∂D/∂n = −A/n² + B + k·b</div>
+        <div class="m">∂D/∂b = −C/b² + E + k·n</div>
+      </div>
+      <div class="step"><div class="n">STEP 2 · SET BOTH TO ZERO</div>
+        <p>At the bottom of a bowl the ground is flat in every direction, so the gradient ∇D is zero.</p>
+        <div class="m" id="eqs"></div>
+      </div>
+      <div class="step"><div class="n">STEP 3 · SOLVE</div>
+        <p><b>Special case k = 0:</b> the knobs don't interact, and each equation solves on its own:</p>
+        <div class="m" id="closed"></div>
+        <p id="kNote"></p>
+      </div>
+    </div>
+    <div>
+      <div class="step"><div class="n">STEP 3b · NEWTON'S METHOD (calculus + a 2×2 linear system)</div>
+        <p>Each step solves <span class="mi">H·Δ = ∇D</span> and moves to <span class="mi">x ← x − Δ</span>. It starts from the k = 0 answer.</p>
+        <div class="tblwrap"><table id="newtonTbl"></table></div>
+      </div>
+      <div class="step"><div class="n">STEP 4 · IS IT REALLY A MINIMUM? (second-derivative test)</div>
+        <p>The Hessian matrix holds the second derivatives. If it is <b>positive definite</b>, the point is the bottom of a bowl. That means both eigenvalues are &gt; 0, or equivalently D<sub>nn</sub> &gt; 0 and det H &gt; 0.</p>
+        <div id="hessBox"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="pane" id="t3">
+  <div class="insight">
+    <b>The key idea of our method: measure the knobs in "doublings", not in steps of one.</b><br>
+    Going from 1 to 2 cooks is a huge change, and going from 40 to 41 is almost nothing. So we work with <span class="mi">u = ln n</span> and <span class="mi">v = ln b</span>.
+    On that scale each trade-off becomes a <b>perfectly symmetric bowl</b>:
+    <div class="m" style="background:#0b1328">A/n + B·n = 2√(AB) · cosh(u − u*),   where u* = ln √(A/B)</div>
+    A cosh curve is very close to a parabola, so a <b>quadratic surface fits it almost perfectly</b>. On the ordinary scale the same bowl is badly lopsided (a steep wall on the left, a gentle slope on the right), and quadratic fits miss.
+    The ④ Proof tab tests this claim on hundreds of random servers.
+  </div>
+
+  <div class="flow">
+    <div class="fb"><b>① Measure</b><span>Run the server at a grid of 5×5 settings. Every reading has random noise, like a real stopwatch.</span></div>
+    <div class="fb"><b>② Fit</b><span>Least squares: solve the normal equations XᵀX·c = Xᵀy (6 unknowns) to get a quadratic bowl.</span></div>
+    <div class="fb"><b>③ Solve</b><span>Set the bowl's gradient to 0. This gives a 2×2 linear system H·x = −g.</span></div>
+    <div class="fb"><b>④ Verify</b><span>Eigenvalues of the fitted H &gt; 0? Then it's a real bowl (a positive-definite quadratic form).</span></div>
+    <div class="fb"><b>⑤ Zoom</b><span>Halve the window around the bottom and repeat. Stop when the bowl is flatter than the noise.</span></div>
+  </div>
+
+  <div class="two">
+    <div>
+      <div class="sect">Experiment settings</div>
+      <div id="sliders3"></div>
+      <div class="ctl"><div class="row"><label>Knob scale</label></div>
+        <div class="btns"><button id="scLog" class="on">Log scale (our method)</button><button id="scLin">Ordinary scale</button></div>
+      </div>
+      <div class="btns" style="margin-top:6px">
+        <button class="primary" id="reMeasure">🎲 New measurements</button>
+        <span class="pill" id="seedPill">seed 7</span>
+      </div>
+      <p class="small">The method <b>never sees the formula's answer</b>. It only gets noisy delay readings, exactly as you would get from timing a real server. Every run uses a seeded random generator, so anyone can reproduce it.</p>
+    </div>
+    <div>
+      <div class="sect">Result</div>
+      <div id="oursResult"></div>
+    </div>
+  </div>
+
+  <h3>Round by round</h3>
+  <div class="tblwrap"><table id="roundsTbl"></table></div>
+  <h3>Inside the last trusted fit</h3>
+  <div id="lsBox" class="small"></div>
+</section>
+
+<section class="pane" id="t4">
+  <h2>Three independent methods. Do they agree?</h2>
+  <div class="tblwrap"><table id="proofTbl"></table></div>
+  <p id="proofNote" class="small"></p>
+
+  <div class="two" style="margin-top:14px">
+    <div class="card" style="background:var(--panel2)">
+      <h3 style="margin-top:0">Automatic self-test</h3>
+      <p class="small">Generates random servers with all five parameters drawn at random, and checks for each one that Newton converged, that the Hessian is positive definite, and that brute-force search finds no lower point.</p>
+      <button class="primary" id="runSelf">Run on 200 random servers</button>
+      <div id="selfOut" style="margin-top:10px"></div>
+    </div>
+    <div class="card" style="background:var(--panel2)">
+      <h3 style="margin-top:0">Why the log scale? The evidence.</h3>
+      <p class="small">Runs our full Measure→Fit→Solve→Verify loop on 300 random servers twice: once on the ordinary scale and once on the log scale. "Success" means the final setting's delay is within 1% of the true minimum.</p>
+      <button class="primary" id="runScale">Run experiment</button>
+      <div id="scaleOut" style="margin-top:10px"></div>
+    </div>
+  </div>
+</section>
+
+<section class="pane" id="t5">
+  <p class="small">Cut the 3-D bowl along one knob while holding the other at its best value. At the minimum the tangent line is flat (slope = 0), which is exactly the first-derivative test.</p>
+  <div class="two">
+    <div><h3>Delay vs cooks n (batch fixed at b*)</h3><canvas id="sliceN" width="560" height="300"></canvas><p class="small" id="sliceNNote"></p></div>
+    <div><h3>Delay vs batch size b (cooks fixed at n*)</h3><canvas id="sliceB" width="560" height="300"></canvas><p class="small" id="sliceBNote"></p></div>
+  </div>
+</section>
+
+<footer>Every number on this page is computed live in your browser. Nothing is typed in by hand. Works offline. · Server Delay Minimizer · Linear Algebra &amp; Calculus micro project</footer>
+</div>
+
+<script src="js/engine.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
