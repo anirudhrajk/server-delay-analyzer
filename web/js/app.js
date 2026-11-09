@@ -374,7 +374,7 @@
     bentos.forEach((b) => b.destroy()); bentos = [];
     if (explorer) { explorer.destroy(); explorer = null; }
     if (sizer) { sizer.disconnect(); sizer = null; }
-    $('dash').innerHTML = ''; $('details').innerHTML = '';
+    $('dash').innerHTML = ''; $('critical').innerHTML = ''; $('details').innerHTML = '';
     LAST = null; MAP = null;
   }
   function bento(host, items, extra) {
@@ -720,6 +720,72 @@
   const CAUSE_COLORS = { overload: '#ff453a', queue: 'rgba(245,245,247,.95)', crowd: 'rgba(245,245,247,.75)', setup: 'rgba(245,245,247,.58)', wait: 'rgba(245,245,247,.42)', clash: 'rgba(245,245,247,.28)', base: 'rgba(245,245,247,.16)' };
   const ORDER = ['base', 'overload', 'queue', 'crowd', 'setup', 'wait', 'clash'];
 
+  // ---------- critical point analysis (maxima, minima and saddle points of D(n, b))
+  // Everything here is worked out from numbers the back end already sends: the fitted
+  // A, B, C, E, k and the critical point it solved for. Nothing is re-optimised here.
+  function sig(x, d) {
+    if (x == null || !isFinite(x)) return '—';
+    if (x === 0) return '0';
+    const a = Math.abs(x);
+    if (a >= 1e5 || a < 1e-3) return x.toExponential(2).replace('e', '×10^').replace(/\^\+?(-?\d+)/, '<sup>$1</sup>');
+    return Number(x.toPrecision(d || 4)).toString();
+  }
+  function signed(x) { return (x < 0 ? '− ' : '+ ') + sig(Math.abs(x)); }
+  function criticalPointHtml(r) {
+    const p = r.fit.params, A = p.A, B = p.B, C = p.C, E = p.E, k = p.k;
+    const n = r.best.n, b = r.best.b;
+    const z = (x, scale) => (Math.abs(x) < 1e-9 * Math.max(1, scale) ? 0 : x);
+    const Dn = z(-A / (n * n) + B + k * b, B + A / (n * n)), Db = z(-C / (b * b) + E + k * n, E + C / (b * b));  // first partials
+    const Dnn = 2 * A / (n * n * n), Dbb = 2 * C / (b * b * b), Dnb = k;          // second partials
+    const disc = Dnn * Dbb - Dnb * Dnb;                                           // second-derivative test
+    const tol = 1e-9 * Math.max(1, Math.abs(Dnn * Dbb));
+    let verdict, vcls, vwhy;
+    if (disc > tol && Dnn > 0) { verdict = 'Local minimum'; vcls = 'min'; vwhy = 'Δ > 0 and D<sub>nn</sub> > 0, so the surface curves up in every direction: this is the fastest setting.'; }
+    else if (disc > tol && Dnn < 0) { verdict = 'Local maximum'; vcls = 'max'; vwhy = 'Δ > 0 and D<sub>nn</sub> < 0, so the surface curves down in every direction: this is the slowest point nearby.'; }
+    else if (disc < -tol) { verdict = 'Saddle point'; vcls = 'saddle'; vwhy = 'Δ < 0, so the surface curves up one way and down the other: neither fastest nor slowest.'; }
+    else { verdict = 'Test inconclusive'; vcls = 'saddle'; vwhy = 'Δ = 0, so the second-derivative test cannot decide.'; }
+    const edge = !r.best.is_minimum && disc > tol && Dnn > 0;
+    const ev = (r.best.eigenvalues || []).map((e) => sig(e)).join(' and ');
+
+    // maxima: with A, C > 0 the surface can never curve down, so there is no local maximum;
+    // the slowest setting in the tested range sits on its edge (extreme value theorem)
+    const g = r.map; let worst = { D: -Infinity };
+    g.D.forEach((row, i) => row.forEach((v, j) => { if (v > worst.D) worst = { D: v, n: g.n[i], b: g.b[j] }; }));
+    const noMax = A > 0 && C > 0;
+
+    const eq = (lhs, rhs) => '<div class="cp-eq"><span>' + lhs + '</span><span>' + rhs + '</span></div>';
+    return '<h3 class="mb-h">Critical point analysis</h3>' +
+      '<p class="mb-note">How the fastest setting is found: maxima, minima and critical points of the delay formula ' +
+      '<i>D</i>(<i>n</i>, <i>b</i>) = <i>D</i><sub>0</sub> + <i>A</i>/<i>n</i> + <i>B</i><i>n</i> + <i>C</i>/<i>b</i> + <i>E</i><i>b</i> + <i>k</i><i>n</i><i>b</i>, ' +
+      'with <i>n</i> = threads and <i>b</i> = batch size.</p>' +
+      '<div class="cp-grid">' +
+        '<section class="cp-step"><span class="cp-no">1</span><h4>Fitted formula</h4>' +
+          '<div class="cp-params">' + [['D<sub>0</sub>', p.D0 || 0], ['A', A], ['B', B], ['C', C], ['E', E], ['k', k]]
+            .map(([s, v]) => '<span><i>' + s + '</i> = ' + sig(v) + '</span>').join('') + '</div>' +
+          '<p class="cp-p">Fitted to your measurements (milliseconds).</p></section>' +
+        '<section class="cp-step"><span class="cp-no">2</span><h4>Critical point: both slopes = 0</h4>' +
+          eq('∂<i>D</i>/∂<i>n</i> = −<i>A</i>/<i>n</i>² + <i>B</i> + <i>k</i><i>b</i>', '= 0') +
+          eq('∂<i>D</i>/∂<i>b</i> = −<i>C</i>/<i>b</i>² + <i>E</i> + <i>k</i><i>n</i>', '= 0') +
+          '<div class="cp-result">(<i>n</i>*, <i>b</i>*) = (' + sig(n, 6) + ', ' + sig(b, 6) + ')</div>' +
+          '<p class="cp-p">Solved with Newton\'s method. Check at this point: ∂<i>D</i>/∂<i>n</i> = ' + sig(Dn, 2) +
+          ', ∂<i>D</i>/∂<i>b</i> = ' + sig(Db, 2) + '. Delay there: <b>' + ms(r.best.D) + '</b>.</p></section>' +
+        '<section class="cp-step"><span class="cp-no">3</span><h4>Second-derivative test</h4>' +
+          eq('<i>D</i><sub>nn</sub> = 2<i>A</i>/<i>n</i>³', '= ' + sig(Dnn)) +
+          eq('<i>D</i><sub>bb</sub> = 2<i>C</i>/<i>b</i>³', '= ' + sig(Dbb)) +
+          eq('<i>D</i><sub>nb</sub> = <i>k</i>', '= ' + sig(Dnb)) +
+          eq('Δ = <i>D</i><sub>nn</sub><i>D</i><sub>bb</sub> − <i>D</i><sub>nb</sub>²', '= ' + sig(disc)) +
+          '</section>' +
+        '<section class="cp-step cp-verdict ' + vcls + '"><span class="cp-no">4</span><h4>Result</h4>' +
+          '<div class="cp-big">' + verdict + '</div><p class="cp-p">' + vwhy + '</p>' +
+          (ev ? '<p class="cp-p">Hessian eigenvalues: ' + ev + (r.best.eigenvalues.every((e) => e > 0) ? ' (both positive: positive definite).' : '.') + '</p>' : '') +
+          (edge ? '<p class="cp-p">This point lies on the edge of the tested range, so the fastest tested setting is used instead.</p>' : '') +
+          '<p class="cp-p"><b>Maxima:</b> ' + (noMax
+            ? 'there is no local maximum. <i>D</i><sub>nn</sub> and <i>D</i><sub>bb</sub> stay above 0 for every <i>n</i>, <i>b</i> > 0, so the surface never curves down. '
+            : 'the formula fitted here can curve down, so a local maximum is possible. ') +
+          'The slowest setting in the tested range lies on its edge: <b>' + num(worst.n) + ' × ' + num(worst.b) + '</b>, about <b>' + ms(worst.D) + '</b>.</p></section>' +
+      '</div>';
+  }
+
   function renderFormula(r) {
     LAST = r;
     const cur = r.current, rec = r.recommended, imp = r.improvement, worth = imp.pct > 0.01;
@@ -782,6 +848,7 @@
       '<span>Recommendation: <b>' + esc(rec.reason) + '</b></span>' +
       '<span>Current setting from: <b>' + esc(cur.source) + '</b></span></div>' });
     bento($('dash'), items);
+    bento($('critical'), [{ html: criticalPointHtml(r), className: 'card-critical' }], { columns: 1, rowHeight: 200 });
     autoDraw($('map'), () => drawMap(r));
     bindMap();
 
@@ -1070,7 +1137,8 @@
     box.className = 'ab';
     box.innerHTML =
       '<section class="ab-sec" data-sm-reveal><h3 class="ab-k">About</h3>' +
-      '<p class="ab-p">Server Delay Analyzer finds where the waiting comes from. Point it at a website, a folder, a program or your own measurements: it times every step, explains each cause in plain words, and works out the fastest setting with our own delay formula.</p></section>' +
+      '<p class="ab-title">Optimizing Server Response Time Using Maxima, Minima, and Critical Point Analysis</p>' +
+      '<p class="ab-p">Server Delay Analyzer finds where the waiting comes from. Point it at a website, a folder, a program or your own measurements: it times every step, explains each cause in plain words, and works out the fastest setting with our own delay formula: it finds the critical point where both slopes are zero, and the second-derivative test confirms it is a minimum.</p></section>' +
       '<section class="ab-sec" data-sm-reveal><h3 class="ab-k">Developed by <b>Team VAAB</b></h3>' +
       '<div class="ab-team" role="list">' + TEAM.map((m, i) =>
         '<button type="button" class="ab-member" role="listitem" data-i="' + i + '" aria-label="' + esc(m.name + ', ' + m.role) + '">' +
